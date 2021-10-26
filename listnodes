@@ -1,0 +1,47 @@
+- hosts: all
+  become: yes
+  gather_facts: false
+  serial: 1
+  tasks:
+  - name: Playbook
+    block:
+    - name: Gather subset to reduce execution time
+      async: 20
+      poll: 5
+      setup:
+        gather_subset:
+          - hardware
+          - "!all"
+          - "!min"
+        filter: "ansible_m*"
+    - set_fact:
+        my_size: "{{ ansible_mounts|json_query(query) }}"
+      vars:
+        query: "[?mount=='/var/lib/docker'].size_total "
+    - debug:
+        var: my_size
+    - name: check if fs size is 100gb
+      assert:
+        that:
+          - my_size <= "107317563392"
+      msg: "'my_size' es menor o igual a 100gb"
+    - debug:
+        var: ansible_memtotal_mb
+    - name: check if memory is greater or equal to 128gb
+      assert:
+        that:
+          - ansible_memtotal_mb >= 128755
+      failed_when: False
+      msg: "mem es mayor o igual a 128gb"
+    - name: List hostname depending on mem and fs
+      shell: hostname
+      register: result
+      when: ansible_memtotal_mb >= 128755 and my_size <= "107317563392"
+    - debug:
+        var: result.stdout
+    - name: save hostname
+      local_action: shell echo {{ result.stdout }} >> /home/cloud-user/inventory.txt
+      when: ansible_memtotal_mb >= 128755 and my_size <= "107317563392"
+    rescue:
+    - debug:
+        msg: "node {{ inventory_hostname }} is ko"
