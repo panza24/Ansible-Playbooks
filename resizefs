@@ -1,0 +1,142 @@
+---
+- name: Configure VM management
+  hosts: all
+  become: true
+  gather_facts: false
+  vars:
+    option_key:   "{{ option|d('', true) }}"
+    option_value: "{{ value|d('', true) }}"
+    shutdown_required: false
+
+    govc_object: "{{ gabfolder|regex_replace('^vm/(.*)', '\\1') }}/{{ inventory_hostname }}"
+    govc_env:
+      GOVC_INSECURE: 'true'
+      GOVC_URL: https://{{ gabserver }}
+      GOVC_USERNAME: "{{ vmware_user|d('omit',true) }}"
+      GOVC_PASSWORD: "{{ vmware_pass|d('omit',true) }}"
+      PATH: "/usr/local/bin:/bin:/usr/bin:/usr/local/sbin:/usr/sbin"
+
+    is_ocp_vm: "{{ 'ose' in group_names }}"
+    ocp_master: "{{ master|d(groups['ose_master__active'][0], true) }}"
+    ocp_api_server: https://{{ openshift_master_cluster_hostname }}:8443
+    gpaas__ocp_custom_kubeconfig: true
+
+  pre_tasks:
+    - name: "Initialize"
+      import_tasks: ../tasks/load-context.yaml
+      vars:
+        use_vault: true
+      tags: [always]
+  tasks:
+    - name: Playbook
+
+      block:
+
+      - name: Gather minimal facts for cinder
+        async: 20
+        poll: 5
+        setup:
+          gather_subset:
+            - hardware
+            - "!all"
+            - "!min"
+          filter: "ansible_m*"
+
+      - set_fact:
+          my_size: "{{ (ansible_mounts|json_query(query)) }}"
+        vars:
+          query: "[?mount=='/var/lib/docker'].size_total "
+
+      - set_fact:
+          change_vm: '{{ false if my_size|length !=1 else ansible_memtotal_mb >= 128755 and my_size[0]|int <= 107317563392 }}'
+      - debug:
+          var: change_vm
+      - debug:
+          var: ansible_mounts
+      - debug:
+          var: ansible_memtotal_mb
+      - debug:
+          var: my_size
+      rescue:
+
+      - debug:
+          msg: "El nodo en ejecucion {{ inventory_hostname }} esta petado"
+      - set_fact:
+          change_vm: false
+
+    -
+      when: change_vm
+      block:
+
+      - name: "{{ __task_prfx }}Collect VM configuration"
+        delegate_to: localhost
+        shell: govc object.collect -json
+          /{{ gabdatacenter }}/{{ gabfolder }}/{{ inventory_hostname }} config
+        environment: "{{ govc_env }}"
+        register: vm_config_result
+
+      - name: "{{ __task_prfx }}Set configuration fact"
+        set_fact:
+          vm_config: "{{ (vm_config_result.stdout|from_json)[0]['Val'] }}"
+
+      - name: Get the VM Path from the DNS Name
+        delegate_to: localhost
+        shell: govc vm.info -vm.dns={{ inventory_hostname }} | grep Path | awk '{print $2}'
+        environment: "{{ govc_env }}"
+        register: vm_path
+
+      - fail:
+      - name: Get the VM JSON Parameters and datastore
+        delegate_to: localhost
+        shell: govc vm.info -vm.ipath={{ vm_path.stdout }} -json=true| jq -r .VirtualMachines[0].Layout.Disk[].DiskFile[0] | head -1 | awk '{print $1}' | tr -d '[]'
+        environment: "{{ govc_env }}"
+        register: datastore
+      - name: Get datastore path
+        delegate_to: localhost
+        shell: govc ls -t datastore '*/*' | grep {{ datastore.stdout }}
+        environment: "{{ govc_env }}"
+        register: ds_path
+      - name: Get the number of attached disks
+        delegate_to: localhost
+        shell: govc vm.info -vm.ipath={{ vm_path.stdout }} -json=true| jq .VirtualMachines[0].Layout.Disk[].DiskFile[0] | awk '{print $2}' | wc -l
+        environment: "{{ govc_env }}"
+        register: disk_num
+      - set_fact:
+          next_disk_num: "{{ disk_num.stdout |int + 1 }}"
+      - name: Get the base disk path/name
+        delegate_to: localhost
+        shell: govc vm.info -vm.ipath={{ vm_path.stdout }} -json=true| jq -r .VirtualMachines[0].Layout.Disk[].DiskFile[0] | awk '{print $2}' | head -1 | sed 's/.vmdk//'
+        environment: "{{ govc_env }}"
+        register: base_disk
+      - set_fact:
+          next_disk_name: "{{ base_disk.stdout }}_{{ next_disk_num }}"
+      - name: Current disks
+        shell: lsscsi -i > /tmp/ggchu
+      - name: add disk
+        delegate_to: localhost
+        shell: govc vm.disk.create -vm.dns={{ inventory_hostname }} -name={{ next_disk_name }} -ds={{ ds_path.stdout }} -size 50Gb
+        environment: "{{ govc_env }}"
+        register: new_disk
+      - name: Disks after adding
+        shell: lsscsi -i > /tmp/ggchu2
+      - name: Getting the device
+        shell: diff /tmp/ggchu /tmp/ggchu2 | grep "^>" |awk '{print $(NF-1)}'
+        register: device
+      - name: Remove temporary files
+        file:
+          state: absent
+          path: /tmp/ggchu
+      - name: Remove temporary files
+        file:
+          state: absent
+          path: /tmp/ggchu2
+      - name: Create or resize a volume
+        lvg:
+          vg: vg_docker
+          pvs: "{{ device.stdout }}"
+      - name: ampliar el lv y fs
+        lvol:
+          vg: vg_docker
+          lv: lv_docker
+          size: +100%FREE
+          resizefs: yes
