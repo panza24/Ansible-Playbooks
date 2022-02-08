@@ -1,12 +1,12 @@
 # file: plays/openshift-utils/svm311.yaml
 ---
 - name: Node labels
-  hosts: "ose_master__active:&master01*:!master01.ocp.ccc.srvb.cn1*"
+  hosts: "ose_master__active:&master01*:!master01.CUALQUIERCOSA*"
   gather_facts: no
   become: true
   vars:
     svm_list: []
-    old_masterssvm: ['ocp.ccc.srvb.cn1,netapp-iscsi,SVM_ISCSI','ocp.ccc.srvb.cn1,netapp-nfs,SVM_NFS','ocp.ccc.srvb.cn1,multipath,SVMGPAASSS01']
+    old_masterssvm: ['ocp.CUALQUIERCOSA,netapp-iscsi,SVM_ISCSI','ocp.CUALQUIERCOSA,netapp-nfs,SVM_NFS','ocp.CUALQUIERCOSA1,multipath,SVMGPAASSS01']
     path_svmlist: /tmp/svm4x/svm_list.csv 
     trident__folder: /opt/trident/trident-installer/
 
@@ -94,4 +94,4 @@
     - name: "imprime svm_list master01 muy antiguos siempre que se ejecute el playbook desde CAN"
       local_action: shell echo -e '{{ old_masterssvm|join("\n") }}' >> {{ path_svmlist }}
       become: false
-      when: "inventory_hostname == 'master01.gsc01.gsc.dmzb.cn1.paas.cloudcenter.corp'"
+      when: "inventory_hostname == 'master01.CUALQUIERCOSA'"
